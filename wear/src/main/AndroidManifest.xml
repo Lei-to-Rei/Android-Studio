@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Body Sensors permission for API 35 and below -->
     <uses-permission android:name="android.permission.BODY_SENSORS" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Samsung Health Sensor permissions -->
-    <uses-permission android:name="com.samsung.android.providers.health.permission.READ" />
+    <!-- Declare that this is a Wear OS app -->
+    <uses-feature android:name="android.hardware.type.watch" />
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -16,6 +17,9 @@
         <meta-data
             android:name="com.google.android.gms.version"
             android:value="@integer/google_play_services_version" />
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
 
         <activity
             android:name=".MainActivity"

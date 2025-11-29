@@ -2,12 +2,17 @@ package com.example.watchsensors
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
@@ -22,6 +27,7 @@ import com.samsung.android.service.health.tracking.data.HealthTrackerType
 class MainActivity : Activity() {
     private lateinit var sensorManager: SensorManager
     private lateinit var statusText: TextView
+    private lateinit var settingsButton: Button
     private var healthTrackingService: HealthTrackingService? = null
 
     companion object {
@@ -72,9 +78,12 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val scrollView = ScrollView(this).apply {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setBackgroundColor(android.graphics.Color.BLACK)
         }
+
+        val scrollView = ScrollView(this)
 
         statusText = TextView(this).apply {
             setPadding(32, 32, 32, 32)
@@ -84,8 +93,18 @@ class MainActivity : Activity() {
             text = "Starting..."
         }
 
+        settingsButton = Button(this).apply {
+            text = "Open Settings"
+            visibility = android.view.View.GONE
+            setOnClickListener {
+                openAppSettings()
+            }
+        }
+
         scrollView.addView(statusText)
-        setContentView(scrollView)
+        container.addView(scrollView)
+        container.addView(settingsButton)
+        setContentView(container)
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
 
@@ -97,26 +116,62 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun openAppSettings() {
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            intent.data = Uri.fromParts("package", packageName, null)
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to open settings: ${e.message}")
+        }
+    }
+
     private fun hasRequiredPermissions(): Boolean {
-        return ContextCompat.checkSelfPermission(
+        val bodySensors = ContextCompat.checkSelfPermission(
             this,
             Manifest.permission.BODY_SENSORS
-        ) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.ACTIVITY_RECOGNITION
-                ) == PackageManager.PERMISSION_GRANTED
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val activityRecognition = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACTIVITY_RECOGNITION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        Log.d(TAG, "BODY_SENSORS permission: $bodySensors")
+        Log.d(TAG, "ACTIVITY_RECOGNITION permission: $activityRecognition")
+
+        return bodySensors && activityRecognition
     }
 
     private fun requestPermissions() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(
-                Manifest.permission.BODY_SENSORS,
-                Manifest.permission.ACTIVITY_RECOGNITION
-            ),
-            PERMISSION_REQUEST_CODE
-        )
+        Log.d(TAG, "Requesting permissions...")
+
+        // Request permissions one at a time to ensure both dialogs appear
+        val permissionsToRequest = mutableListOf<String>()
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BODY_SENSORS)
+            != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.BODY_SENSORS)
+            Log.d(TAG, "Need to request BODY_SENSORS")
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
+            != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
+            Log.d(TAG, "Need to request ACTIVITY_RECOGNITION")
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            Log.d(TAG, "Requesting ${permissionsToRequest.size} permissions: $permissionsToRequest")
+            ActivityCompat.requestPermissions(
+                this,
+                permissionsToRequest.toTypedArray(),
+                PERMISSION_REQUEST_CODE
+            )
+        } else {
+            Log.d(TAG, "All permissions already granted")
+            initializeSensors()
+        }
     }
 
     override fun onRequestPermissionsResult(
@@ -125,12 +180,51 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
         if (requestCode == PERMISSION_REQUEST_CODE) {
-            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            Log.d(TAG, "Permission results received:")
+            permissions.forEachIndexed { index, permission ->
+                val granted = grantResults.getOrNull(index) == PackageManager.PERMISSION_GRANTED
+                Log.d(TAG, "$permission: $granted")
+            }
+
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                Log.d(TAG, "All permissions granted, initializing sensors")
+                settingsButton.visibility = android.view.View.GONE
                 initializeSensors()
             } else {
-                statusText.text = "Permissions denied.\nPlease grant sensor permissions."
+                val deniedPermissions = mutableListOf<String>()
+                permissions.forEachIndexed { index, permission ->
+                    if (grantResults.getOrNull(index) != PackageManager.PERMISSION_GRANTED) {
+                        deniedPermissions.add(when(permission) {
+                            Manifest.permission.BODY_SENSORS -> "Body Sensors (vital signs)"
+                            Manifest.permission.ACTIVITY_RECOGNITION -> "Physical Activity"
+                            else -> permission
+                        })
+                    }
+                }
+
+                val message = "Missing permissions:\n\n${deniedPermissions.joinToString("\n")}\n\n" +
+                        "Please tap 'Open Settings' below,\n" +
+                        "then enable:\n" +
+                        "• Physical activity\n" +
+                        "• Access sensor data about\n  your vital signs\n\n" +
+                        "Then restart the app."
+
+                Log.e(TAG, "Denied: $deniedPermissions")
+                statusText.text = message
+                settingsButton.visibility = android.view.View.VISIBLE
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Recheck permissions when returning from settings
+        if (hasRequiredPermissions() && statusText.text.contains("Missing permissions")) {
+            statusText.text = "Permissions granted!\nRestarting..."
+            settingsButton.visibility = android.view.View.GONE
+            initializeSensors()
         }
     }
 
