@@ -6,9 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.watchsensors"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.watchsensors"
@@ -16,7 +14,6 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
-
     }
 
     buildTypes {
@@ -35,7 +32,6 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
-    useLibrary("wear-sdk")
     buildFeatures {
         compose = true
     }
@@ -57,6 +53,15 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+
+    // Existing dependencies
     implementation("androidx.wear:wear:1.3.0")
     implementation("com.google.android.gms:play-services-wearable:19.0.0")
+
+    // Samsung Health Sensor SDK (local AAR)
+    implementation(files("libs/samsung-health-sensor-api-1.4.1.aar"))
+
+    // Coroutines for async operations
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 }

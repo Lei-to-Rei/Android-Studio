@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Samsung Health Sensor permissions -->
+    <uses-permission android:name="com.samsung.android.providers.health.permission.READ" />
+
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="Watch Sensors"
