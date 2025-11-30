@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.net.Uri
@@ -11,6 +12,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -19,27 +21,34 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
+import com.samsung.android.service.health.tracking.ConnectionListener
+import com.samsung.android.service.health.tracking.HealthTracker
 import com.samsung.android.service.health.tracking.HealthTrackerException
 import com.samsung.android.service.health.tracking.HealthTrackingService
-import com.samsung.android.service.health.tracking.ConnectionListener
+import com.samsung.android.service.health.tracking.data.DataPoint
 import com.samsung.android.service.health.tracking.data.HealthTrackerType
+import com.samsung.android.service.health.tracking.data.ValueKey
 
 class MainActivity : Activity() {
     private lateinit var sensorManager: SensorManager
     private lateinit var statusText: TextView
-    private lateinit var settingsButton: Button
+    private lateinit var buttonContainer: LinearLayout
     private var healthTrackingService: HealthTrackingService? = null
+    private var activeTracker: HealthTracker? = null
+    private var activeTrackerType: HealthTrackerType? = null
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 100
         private const val TAG = "WatchSensors"
     }
 
-    // Connection listener for Samsung Health Service
     private val connectionListener = object : ConnectionListener {
         override fun onConnectionSuccess() {
             Log.d(TAG, "Samsung Health Service connected")
-            checkAllSensors()
+            runOnUiThread {
+                statusText.text = "Connected!\nSelect a sensor below:"
+                createSensorButtons()
+            }
         }
 
         override fun onConnectionEnded() {
@@ -47,68 +56,56 @@ class MainActivity : Activity() {
         }
 
         override fun onConnectionFailed(error: HealthTrackerException) {
-            Log.e(TAG, "Samsung Health Service connection failed: ${error.errorCode}")
-            val allSensors = mutableListOf<String>()
-
-            // Still get hardware sensors even if Samsung Health fails
-            val hardwareSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
-            allSensors.addAll(hardwareSensors.map { getSensorTypeName(it.type) })
-
-            when (error.errorCode) {
-                HealthTrackerException.OLD_PLATFORM_VERSION -> {
-                    allSensors.add("Samsung Health: Platform outdated")
-                }
-                HealthTrackerException.PACKAGE_NOT_INSTALLED -> {
-                    allSensors.add("Samsung Health: Not installed")
-                }
-                else -> {
-                    allSensors.add("Samsung Health: Error ${error.errorCode}")
+            Log.e(TAG, "Connection failed: ${error.errorCode}")
+            runOnUiThread {
+                statusText.text = "Connection failed\nError: ${error.errorCode}"
+                if (error.hasResolution()) {
+                    error.resolve(this@MainActivity)
                 }
             }
-
-            // Try to resolve if possible
-            if (error.hasResolution()) {
-                error.resolve(this@MainActivity)
-            }
-
-            updateAndSendSensorList(allSensors)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val container = LinearLayout(this).apply {
+        val mainContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(android.graphics.Color.BLACK)
+            setBackgroundColor(Color.BLACK)
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
 
-        val scrollView = ScrollView(this)
-
         statusText = TextView(this).apply {
-            setPadding(32, 32, 32, 32)
+            setPadding(16, 16, 16, 16)
             textSize = 12f
             gravity = Gravity.CENTER
-            setTextColor(android.graphics.Color.WHITE)
+            setTextColor(Color.WHITE)
             text = "Starting..."
         }
 
-        settingsButton = Button(this).apply {
-            text = "Open Settings"
-            visibility = android.view.View.GONE
-            setOnClickListener {
-                openAppSettings()
-            }
+        val scrollView = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
         }
 
-        scrollView.addView(statusText)
-        container.addView(scrollView)
-        container.addView(settingsButton)
-        setContentView(container)
+        buttonContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 16, 16, 16)
+        }
+
+        scrollView.addView(buttonContainer)
+        mainContainer.addView(statusText)
+        mainContainer.addView(scrollView)
+        setContentView(mainContainer)
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
 
-        // Check permissions
         if (!hasRequiredPermissions()) {
             requestPermissions()
         } else {
@@ -116,62 +113,27 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun openAppSettings() {
-        try {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-            intent.data = Uri.fromParts("package", packageName, null)
-            startActivity(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to open settings: ${e.message}")
-        }
-    }
-
     private fun hasRequiredPermissions(): Boolean {
         val bodySensors = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.BODY_SENSORS
+            this, Manifest.permission.BODY_SENSORS
         ) == PackageManager.PERMISSION_GRANTED
 
         val activityRecognition = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACTIVITY_RECOGNITION
+            this, Manifest.permission.ACTIVITY_RECOGNITION
         ) == PackageManager.PERMISSION_GRANTED
-
-        Log.d(TAG, "BODY_SENSORS permission: $bodySensors")
-        Log.d(TAG, "ACTIVITY_RECOGNITION permission: $activityRecognition")
 
         return bodySensors && activityRecognition
     }
 
     private fun requestPermissions() {
-        Log.d(TAG, "Requesting permissions...")
-
-        // Request permissions one at a time to ensure both dialogs appear
-        val permissionsToRequest = mutableListOf<String>()
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.BODY_SENSORS)
-            != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.BODY_SENSORS)
-            Log.d(TAG, "Need to request BODY_SENSORS")
-        }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
-            != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
-            Log.d(TAG, "Need to request ACTIVITY_RECOGNITION")
-        }
-
-        if (permissionsToRequest.isNotEmpty()) {
-            Log.d(TAG, "Requesting ${permissionsToRequest.size} permissions: $permissionsToRequest")
-            ActivityCompat.requestPermissions(
-                this,
-                permissionsToRequest.toTypedArray(),
-                PERMISSION_REQUEST_CODE
-            )
-        } else {
-            Log.d(TAG, "All permissions already granted")
-            initializeSensors()
-        }
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(
+                Manifest.permission.BODY_SENSORS,
+                Manifest.permission.ACTIVITY_RECOGNITION
+            ),
+            PERMISSION_REQUEST_CODE
+        )
     }
 
     override fun onRequestPermissionsResult(
@@ -182,205 +144,251 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
         if (requestCode == PERMISSION_REQUEST_CODE) {
-            Log.d(TAG, "Permission results received:")
-            permissions.forEachIndexed { index, permission ->
-                val granted = grantResults.getOrNull(index) == PackageManager.PERMISSION_GRANTED
-                Log.d(TAG, "$permission: $granted")
-            }
-
-            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-                Log.d(TAG, "All permissions granted, initializing sensors")
-                settingsButton.visibility = android.view.View.GONE
+            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
                 initializeSensors()
             } else {
-                val deniedPermissions = mutableListOf<String>()
-                permissions.forEachIndexed { index, permission ->
-                    if (grantResults.getOrNull(index) != PackageManager.PERMISSION_GRANTED) {
-                        deniedPermissions.add(when(permission) {
-                            Manifest.permission.BODY_SENSORS -> "Body Sensors (vital signs)"
-                            Manifest.permission.ACTIVITY_RECOGNITION -> "Physical Activity"
-                            else -> permission
-                        })
-                    }
-                }
-
-                val message = "Missing permissions:\n\n${deniedPermissions.joinToString("\n")}\n\n" +
-                        "Please tap 'Open Settings' below,\n" +
-                        "then enable:\n" +
-                        "• Physical activity\n" +
-                        "• Access sensor data about\n  your vital signs\n\n" +
-                        "Then restart the app."
-
-                Log.e(TAG, "Denied: $deniedPermissions")
-                statusText.text = message
-                settingsButton.visibility = android.view.View.VISIBLE
+                statusText.text = "Permissions denied.\nGo to Settings to enable."
+                addSettingsButton()
             }
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Recheck permissions when returning from settings
-        if (hasRequiredPermissions() && statusText.text.contains("Missing permissions")) {
-            statusText.text = "Permissions granted!\nRestarting..."
-            settingsButton.visibility = android.view.View.GONE
-            initializeSensors()
+    private fun addSettingsButton() {
+        val settingsButton = Button(this).apply {
+            text = "Open Settings"
+            setOnClickListener {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                intent.data = Uri.fromParts("package", packageName, null)
+                startActivity(intent)
+            }
         }
+        buttonContainer.addView(settingsButton)
     }
 
     private fun initializeSensors() {
         try {
-            // Initialize Samsung Health Tracking Service
             healthTrackingService = HealthTrackingService(connectionListener, this)
             healthTrackingService?.connectService()
-
-            statusText.text = "Connecting to\nSamsung Health Service..."
-
+            statusText.text = "Connecting..."
         } catch (e: Exception) {
-            Log.e(TAG, "Error initializing Samsung Health Service: ${e.message}")
-
-            // If Samsung Health fails, still show hardware sensors
-            val hardwareSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
-            val sensorList = hardwareSensors.map { getSensorTypeName(it.type) }.toMutableList()
-            sensorList.add("Samsung Health SDK: ${e.message}")
-
-            updateAndSendSensorList(sensorList)
+            Log.e(TAG, "Error: ${e.message}")
+            statusText.text = "Error: ${e.message}"
         }
     }
 
-    private fun checkAllSensors() {
-        val allSensors = mutableListOf<String>()
+    private fun createSensorButtons() {
+        buttonContainer.removeAllViews()
 
-        // Get standard hardware sensors
-        val hardwareSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
-        Log.d(TAG, "Found ${hardwareSensors.size} hardware sensors")
-        allSensors.addAll(hardwareSensors.map { getSensorTypeName(it.type) })
+        val trackingCapability = healthTrackingService?.trackingCapability
+        val availableTrackers = trackingCapability?.supportHealthTrackerTypes ?: emptyList()
 
-        // Check Samsung Health sensors
-        healthTrackingService?.let { service ->
-            try {
-                val trackingCapability = service.trackingCapability
-                val availableTrackers = trackingCapability.supportHealthTrackerTypes
+        // Add Stop button at the top
+        val stopButton = Button(this).apply {
+            text = "⏹ STOP ALL"
+            setBackgroundColor(Color.RED)
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                stopCurrentTracker()
+            }
+        }
+        buttonContainer.addView(stopButton)
 
-                Log.d(TAG, "Available Samsung Health trackers: ${availableTrackers.size}")
+        // Add divider
+        addDivider()
 
-                // Check each common tracker type
-                checkTrackerType(HealthTrackerType.HEART_RATE_CONTINUOUS, availableTrackers, allSensors)
-                checkTrackerType(HealthTrackerType.SPO2_ON_DEMAND, availableTrackers, allSensors)
-                checkTrackerType(HealthTrackerType.ECG_ON_DEMAND, availableTrackers, allSensors)
-                checkTrackerType(HealthTrackerType.BIA_ON_DEMAND, availableTrackers, allSensors)
-                checkTrackerType(HealthTrackerType.ACCELEROMETER_CONTINUOUS, availableTrackers, allSensors)
-                checkTrackerType(HealthTrackerType.PPG_CONTINUOUS, availableTrackers, allSensors)
-                checkTrackerType(HealthTrackerType.PPG_ON_DEMAND, availableTrackers, allSensors)
-                checkTrackerType(HealthTrackerType.SKIN_TEMPERATURE_ON_DEMAND, availableTrackers, allSensors)
+        // Create buttons for each available sensor
+        val sensorButtons = mapOf(
+            HealthTrackerType.HEART_RATE_CONTINUOUS to "❤️ Heart Rate",
+            HealthTrackerType.SPO2_ON_DEMAND to "🫁 Blood Oxygen (SpO2)",
+            HealthTrackerType.ECG_ON_DEMAND to "📈 ECG",
+            HealthTrackerType.BIA_ON_DEMAND to "⚖️ Body Composition (BIA)",
+            HealthTrackerType.PPG_CONTINUOUS to "🔴 PPG (Raw)",
+            HealthTrackerType.ACCELEROMETER_CONTINUOUS to "📊 Accelerometer",
+            HealthTrackerType.SKIN_TEMPERATURE_ON_DEMAND to "🌡️ Skin Temperature"
+        )
 
-                // Try newer tracker types (may not be in SDK 1.4.1)
-                try {
-                    checkTrackerType(HealthTrackerType.SKIN_TEMPERATURE_CONTINUOUS, availableTrackers, allSensors)
-                } catch (e: Exception) {
-                    Log.d(TAG, "SKIN_TEMPERATURE_CONTINUOUS not available in this SDK version")
+        sensorButtons.forEach { (trackerType, label) ->
+            if (availableTrackers.contains(trackerType)) {
+                val button = Button(this).apply {
+                    text = label
+                    setOnClickListener {
+                        startTracker(trackerType, label)
+                    }
                 }
-
-                try {
-                    checkTrackerType(HealthTrackerType.SWEAT_LOSS, availableTrackers, allSensors)
-                } catch (e: Exception) {
-                    Log.d(TAG, "SWEAT_LOSS not available in this SDK version")
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error checking Samsung Health sensors: ${e.message}")
-                allSensors.add("Samsung Health: Error checking sensors")
+                buttonContainer.addView(button)
             }
         }
 
-        updateAndSendSensorList(allSensors)
-    }
+        // Show unavailable sensors
+        addDivider()
+        val unavailableText = TextView(this).apply {
+            text = "Unavailable sensors:"
+            textSize = 10f
+            setTextColor(Color.GRAY)
+            setPadding(8, 8, 8, 4)
+        }
+        buttonContainer.addView(unavailableText)
 
-    private fun checkTrackerType(
-        type: HealthTrackerType,
-        availableTrackers: List<HealthTrackerType>,
-        sensorList: MutableList<String>
-    ) {
-        if (availableTrackers.contains(type)) {
-            val trackerName = getTrackerTypeName(type)
-            sensorList.add("$trackerName (Samsung Health)")
-            Log.d(TAG, "Supported: $trackerName")
+        sensorButtons.forEach { (trackerType, label) ->
+            if (!availableTrackers.contains(trackerType)) {
+                val unavailableButton = Button(this).apply {
+                    text = "$label (Not Available)"
+                    isEnabled = false
+                    setTextColor(Color.GRAY)
+                }
+                buttonContainer.addView(unavailableButton)
+            }
         }
     }
 
-    private fun updateAndSendSensorList(sensors: List<String>) {
-        runOnUiThread {
-            statusText.text = "Found ${sensors.size} sensors\n\nSending to phone..."
-            sendSensorListToPhone(sensors)
+    private fun addDivider() {
+        val divider = TextView(this).apply {
+            text = "─────────────────"
+            textSize = 10f
+            setTextColor(Color.GRAY)
+            gravity = Gravity.CENTER
+            setPadding(0, 8, 0, 8)
+        }
+        buttonContainer.addView(divider)
+    }
+
+    private fun startTracker(trackerType: HealthTrackerType, label: String) {
+        // Stop any currently running tracker
+        stopCurrentTracker()
+
+        try {
+            val tracker = healthTrackingService?.getHealthTracker(trackerType)
+
+            if (tracker == null) {
+                statusText.text = "Failed to get $label tracker"
+                return
+            }
+
+            val trackerEventListener = object : HealthTracker.TrackerEventListener {
+                override fun onDataReceived(dataPoints: MutableList<DataPoint>) {
+                    Log.d(TAG, "$label: Received ${dataPoints.size} data points")
+
+                    dataPoints.forEach { dataPoint ->
+                        val data = extractDataFromPoint(dataPoint, trackerType)
+                        sendDataToPhone(label, data)
+
+                        runOnUiThread {
+                            statusText.text = "📡 $label\n\n$data"
+                        }
+                    }
+                }
+
+                override fun onFlushCompleted() {
+                    Log.d(TAG, "$label: Flush completed")
+                }
+
+                override fun onError(error: HealthTracker.TrackerError) {
+                    Log.e(TAG, "$label error: ${error.name}")
+                    runOnUiThread {
+                        statusText.text = "Error: ${error.name}"
+                    }
+                }
+            }
+
+            tracker.setEventListener(trackerEventListener)
+            activeTracker = tracker
+            activeTrackerType = trackerType
+
+            statusText.text = "Starting $label..."
+            Log.d(TAG, "Starting tracker: $label")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting tracker: ${e.message}")
+            statusText.text = "Error: ${e.message}"
         }
     }
 
-    private fun sendSensorListToPhone(sensors: List<String>) {
-        val sensorArray = sensors.toTypedArray()
+    private fun stopCurrentTracker() {
+        activeTracker?.unsetEventListener()
+        activeTracker = null
+        activeTrackerType = null
+        statusText.text = "Stopped.\nSelect a sensor below:"
+        Log.d(TAG, "Tracker stopped")
+    }
 
-        Log.d(TAG, "Preparing to send ${sensorArray.size} sensor names")
+    private fun extractDataFromPoint(dataPoint: DataPoint, trackerType: HealthTrackerType): String {
+        val sb = StringBuilder()
 
+        when (trackerType) {
+            HealthTrackerType.HEART_RATE_CONTINUOUS -> {
+                val hr = dataPoint.getValue(ValueKey.HeartRateSet.HEART_RATE)
+                val status = dataPoint.getValue(ValueKey.HeartRateSet.HEART_RATE_STATUS)
+                sb.append("Heart Rate: $hr bpm\n")
+                sb.append("Status: $status")
+            }
+
+            HealthTrackerType.SPO2_ON_DEMAND -> {
+                val spo2 = dataPoint.getValue(ValueKey.SpO2Set.SPO2)
+                val status = dataPoint.getValue(ValueKey.SpO2Set.STATUS)
+                sb.append("SpO2: $spo2%\n")
+                sb.append("Status: $status")
+            }
+
+            HealthTrackerType.ECG_ON_DEMAND -> {
+                val ppg = dataPoint.getValue(ValueKey.EcgSet.PPG_GREEN)
+                val leadOff = dataPoint.getValue(ValueKey.EcgSet.LEAD_OFF)
+                sb.append("PPG Green: $ppg\n")
+                sb.append("Lead Off: $leadOff")
+            }
+
+            HealthTrackerType.BIA_ON_DEMAND -> {
+                val impedance = dataPoint.getValue(ValueKey.BiaSet.STATUS)
+                sb.append("Impedance: $impedance Ω")
+            }
+
+            HealthTrackerType.PPG_CONTINUOUS -> {
+                val green = dataPoint.getValue(ValueKey.PpgGreenSet.PPG_GREEN)
+                sb.append("PPG Green: $green")
+            }
+
+            HealthTrackerType.ACCELEROMETER_CONTINUOUS -> {
+                val x = dataPoint.getValue(ValueKey.AccelerometerSet.ACCELEROMETER_X)
+                val y = dataPoint.getValue(ValueKey.AccelerometerSet.ACCELEROMETER_Y)
+                val z = dataPoint.getValue(ValueKey.AccelerometerSet.ACCELEROMETER_Z)
+                sb.append("X: $x\nY: $y\nZ: $z")
+            }
+
+            HealthTrackerType.SKIN_TEMPERATURE_ON_DEMAND -> {
+                val temp = dataPoint.getValue(ValueKey.SkinTemperatureSet.STATUS)
+                val status = dataPoint.getValue(ValueKey.SkinTemperatureSet.STATUS)
+                sb.append("Temp: $temp°C\n")
+                sb.append("Status: $status")
+            }
+
+            else -> {
+                sb.append("Data received")
+            }
+        }
+
+        return sb.toString()
+    }
+
+    private fun sendDataToPhone(sensorName: String, data: String) {
         val dataClient = Wearable.getDataClient(this)
 
-        val request = PutDataMapRequest.create("/sensor_list").apply {
-            dataMap.putStringArray("available_sensors", sensorArray)
+        val request = PutDataMapRequest.create("/sensor_data").apply {
+            dataMap.putString("sensor_name", sensorName)
+            dataMap.putString("sensor_data", data)
             dataMap.putLong("timestamp", System.currentTimeMillis())
         }.asPutDataRequest().setUrgent()
 
         dataClient.putDataItem(request)
             .addOnSuccessListener {
-                Log.d(TAG, "✓ Data sent successfully!")
-                statusText.text = "✓ Sent ${sensorArray.size} sensors\nto phone"
+                Log.d(TAG, "Data sent to phone: $sensorName")
             }
             .addOnFailureListener { e ->
-                Log.e(TAG, "✗ Failed to send data: ${e.message}")
-                statusText.text = "✗ Failed to send:\n${e.message}"
+                Log.e(TAG, "Failed to send data: ${e.message}")
             }
-    }
-
-    private fun getTrackerTypeName(type: HealthTrackerType): String {
-        return when (type) {
-            HealthTrackerType.HEART_RATE_CONTINUOUS -> "Heart Rate (Continuous)"
-            HealthTrackerType.SPO2_ON_DEMAND -> "Blood Oxygen SpO2"
-            HealthTrackerType.ECG_ON_DEMAND -> "ECG (Electrocardiogram)"
-            HealthTrackerType.BIA_ON_DEMAND -> "BIA (Body Composition)"
-            HealthTrackerType.ACCELEROMETER_CONTINUOUS -> "Accelerometer (Samsung)"
-            HealthTrackerType.PPG_CONTINUOUS -> "PPG (Photoplethysmogram) Continuous"
-            HealthTrackerType.PPG_ON_DEMAND -> "PPG (Photoplethysmogram) On-Demand"
-            HealthTrackerType.SKIN_TEMPERATURE_CONTINUOUS -> "Skin Temperature (Continuous)"
-            HealthTrackerType.SKIN_TEMPERATURE_ON_DEMAND -> "Skin Temperature (On-Demand)"
-            HealthTrackerType.SWEAT_LOSS -> "Sweat Loss"
-            else -> "Unknown Tracker: ${type.name}"
-        }
-    }
-
-    private fun getSensorTypeName(type: Int): String {
-        return when (type) {
-            Sensor.TYPE_ACCELEROMETER -> "Accelerometer"
-            Sensor.TYPE_MAGNETIC_FIELD -> "Magnetometer"
-            Sensor.TYPE_GYROSCOPE -> "Gyroscope"
-            Sensor.TYPE_LIGHT -> "Light Sensor"
-            Sensor.TYPE_PRESSURE -> "Barometer"
-            Sensor.TYPE_PROXIMITY -> "Proximity"
-            Sensor.TYPE_GRAVITY -> "Gravity"
-            Sensor.TYPE_LINEAR_ACCELERATION -> "Linear Acceleration"
-            Sensor.TYPE_ROTATION_VECTOR -> "Rotation Vector"
-            Sensor.TYPE_RELATIVE_HUMIDITY -> "Humidity"
-            Sensor.TYPE_AMBIENT_TEMPERATURE -> "Temperature"
-            Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED -> "Magnetometer (Uncal)"
-            Sensor.TYPE_GAME_ROTATION_VECTOR -> "Game Rotation"
-            Sensor.TYPE_GYROSCOPE_UNCALIBRATED -> "Gyroscope (Uncal)"
-            Sensor.TYPE_STEP_DETECTOR -> "Step Detector"
-            Sensor.TYPE_STEP_COUNTER -> "Step Counter"
-            Sensor.TYPE_HEART_RATE -> "Heart Rate (Hardware)"
-            Sensor.TYPE_HEART_BEAT -> "Heart Beat"
-            Sensor.TYPE_LOW_LATENCY_OFFBODY_DETECT -> "Off-Body Detect"
-            else -> "Sensor Type $type"
-        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopCurrentTracker()
         healthTrackingService?.disconnectService()
     }
 }

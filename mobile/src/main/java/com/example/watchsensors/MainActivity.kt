@@ -90,23 +90,58 @@ class MainActivity : AppCompatActivity(), DataClient.OnDataChangedListener {
                 val path = event.dataItem.uri.path ?: continue
                 Log.d("PhoneSensors", "Path: $path")
 
-                if (path == "/sensor_list") {
-                    val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
-                    val sensors = dataMap.getStringArray("available_sensors")
+                when (path) {
+                    "/sensor_list" -> {
+                        val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
+                        val sensors = dataMap.getStringArray("available_sensors")
 
-                    Log.d("PhoneSensors", "Received ${sensors?.size} sensors")
+                        Log.d("PhoneSensors", "Received ${sensors?.size} sensors")
 
-                    if (sensors != null) {
-                        availableSensors.clear()
-                        availableSensors.addAll(sensors)
+                        if (sensors != null) {
+                            availableSensors.clear()
+                            availableSensors.addAll(sensors)
+
+                            runOnUiThread {
+                                updateDisplay()
+                            }
+                        }
+                    }
+
+                    "/sensor_data" -> {
+                        val dataMap = DataMapItem.fromDataItem(event.dataItem).dataMap
+                        val sensorName = dataMap.getString("sensor_name")
+                        val sensorData = dataMap.getString("sensor_data")
+                        val timestamp = dataMap.getLong("timestamp")
+
+                        Log.d("PhoneSensors", "Live data from $sensorName: $sensorData")
 
                         runOnUiThread {
-                            updateDisplay()
+                            displayLiveSensorData(sensorName, sensorData, timestamp)
                         }
                     }
                 }
             }
         }
+    }
+
+    private fun displayLiveSensorData(sensorName: String?, data: String?, timestamp: Long) {
+        if (sensorName == null || data == null) return
+
+        val displayText = StringBuilder()
+        displayText.append("╔════════════════════════════════════════════╗\n")
+        displayText.append("║         LIVE SENSOR DATA                  ║\n")
+        displayText.append("╚════════════════════════════════════════════╝\n\n")
+
+        displayText.append("Sensor: $sensorName\n\n")
+        displayText.append("─────────────────────────────────────\n\n")
+        displayText.append(data)
+        displayText.append("\n\n─────────────────────────────────────\n")
+
+        val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            .format(java.util.Date(timestamp))
+        displayText.append("\nLast Update: $timeStr")
+
+        sensorDataText.text = displayText.toString()
     }
 
     private fun updateDisplay() {
